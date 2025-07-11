@@ -1,35 +1,66 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
+from typing import Optional
+import json
+import asyncio
+from telegram import Bot
+import os
+
+# ========== CONFIG ==========
+TOKEN = "8056037997:AAEHBdeTwOPHLUImNLibxCG6dvb9YD8XmQU"
+GRUPO_DESTINO = "@DBSPUXADASVIP"
+CAMINHO_PERMISSOES = "permissoes.json"
+bot = Bot(token=TOKEN)
+# ============================
 
 app = FastAPI()
 
-# Simulação de usuários e permissões (em memória)
-USUARIOS = {
-    "user1": {"senha": "1234", "permissoes": ["cpf", "telefone", "nome"]},
-    "user2": {"senha": "4321", "permissoes": ["cpf", "telefone", "nome", "cnpj", "placa"]},
-    "user3": {"senha": "9999", "permissoes": ["cpf", "telefone", "nome", "cnpj", "placa", "endereco"]},
-}
-
-class ConsultaRequest(BaseModel):
-    usuario: str
-    senha: str
-    tipo: str  # cpf, telefone, nome, cnpj, placa, endereco
+# Modelo de entrada
+class Consulta(BaseModel):
+    user_id: int
+    tipo: str  # cpf, telefone, placa, etc
     valor: str
 
-def autenticar_usuario(req: ConsultaRequest):
-    user = USUARIOS.get(req.usuario)
-    if not user or user["senha"] != req.senha:
-        raise HTTPException(status_code=401, detail="Usuário ou senha inválidos")
-    if req.tipo not in user["permissoes"]:
-        raise HTTPException(status_code=403, detail="Permissão negada para essa consulta")
-    return True
+# Carrega JSON com permissões
+def carregar_permissoes():
+    if not os.path.exists(CAMINHO_PERMISSOES):
+        return {}
+    with open(CAMINHO_PERMISSOES, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-@app.post("/consulta")
-async def consulta(req: ConsultaRequest):
-    autenticar_usuario(req)
+# Aguarda resposta no grupo (por padrão 30s)
+async def aguardar_resposta(mensagem_id, timeout=30):
+    for _ in range(timeout * 2):
+        await asyncio.sleep(0.5)
+        mensagens = await bot.get_chat(GRUPO_DESTINO).get_history(limit=3)
+        for m in mensagens:
+            if m.reply_to_message and m.reply_to_message.message_id == mensagem_id:
+                return m.text
+    return None
 
-    # Aqui você chamaria a lógica para consultar o grupo Telegram
-    # Vou simular uma resposta genérica
-    resultado_simulado = f"Resultado simulado para {req.tipo} = {req.valor}"
+# Rota raiz
+@app.get("/")
+def home():
+    return {"mensagem": "🦈 API SharkBuscas online!"}
 
-    return {"status": "sucesso", "resultado": resultado_simulado}
+# Rota de consulta
+@app.post("/consultar")
+async def consultar(dados: Consulta):
+    permissoes = carregar_permissoes()
+    user = str(dados.user_id)
+
+    if user not in permissoes:
+        raise HTTPException(status_code=403, detail="Usuário sem permissão")
+
+    if dados.tipo not in permissoes[user]:
+        raise HTTPException(status_code=403, detail=f"Você não tem permissão para consultar '{dados.tipo}'")
+
+    comando = f"/{dados.tipo} {dados.valor}"
+    mensagem = await bot.send_message(GRUPO_DESTINO, comando)
+
+    resposta = await aguardar_resposta(mensagem.message_id)
+
+    if resposta:
+        return {"status": "ok", "resposta": resposta}
+    else:
+        raise HTTPException(status_code=504, detail="Tempo de resposta esgotado")
