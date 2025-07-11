@@ -1,66 +1,63 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
-import json
-import asyncio
-from telegram import Bot
-import os
-
-# ========== CONFIG ==========
-TOKEN = "8056037997:AAEHBdeTwOPHLUImNLibxCG6dvb9YD8XmQU"
-GRUPO_DESTINO = "@DBSPUXADASVIP"
-CAMINHO_PERMISSOES = "permissoes.json"
-bot = Bot(token=TOKEN)
-# ============================
+from typing import List, Optional
 
 app = FastAPI()
 
-# Modelo de entrada
-class Consulta(BaseModel):
-    user_id: int
-    tipo: str  # cpf, telefone, placa, etc
-    valor: str
+# Simula um "banco" de permissões, chave: user_id (int), valor: lista dos módulos liberados
+# Você vai controlar quem pode consultar o quê aqui
+permissoes = {
+    1: ["cpf", "telefone", "nome", "cnpj", "placa"],  # usuário 1 pode tudo
+    2: ["cpf", "telefone"],                            # usuário 2 pode só cpf e telefone
+    # adicione outros conforme quiser
+}
 
-# Carrega JSON com permissões
-def carregar_permissoes():
-    if not os.path.exists(CAMINHO_PERMISSOES):
-        return {}
-    with open(CAMINHO_PERMISSOES, "r", encoding="utf-8") as f:
-        return json.load(f)
+# Simula dados das consultas (em produção, você consultaria o grupo do Telegram ou banco real)
+dados_cpf = {"12345678900": {"nome": "João Silva", "idade": 30}}
+dados_telefone = {"11999999999": {"nome": "Maria Souza", "operadora": "Claro"}}
 
-# Aguarda resposta no grupo (por padrão 30s)
-async def aguardar_resposta(mensagem_id, timeout=30):
-    for _ in range(timeout * 2):
-        await asyncio.sleep(0.5)
-        mensagens = await bot.get_chat(GRUPO_DESTINO).get_history(limit=3)
-        for m in mensagens:
-            if m.reply_to_message and m.reply_to_message.message_id == mensagem_id:
-                return m.text
-    return None
+# Modelo para resposta das consultas
+class ConsultaResponse(BaseModel):
+    consulta: str
+    resultado: Optional[dict]
 
-# Rota raiz
+# Rota raiz para teste
 @app.get("/")
-def home():
-    return {"mensagem": "🦈 API SharkBuscas online!"}
+async def root():
+    return {"mensagem": "🦈 API SharkBuscas Online!"}
 
-# Rota de consulta
-@app.post("/consultar")
-async def consultar(dados: Consulta):
-    permissoes = carregar_permissoes()
-    user = str(dados.user_id)
+# Endpoint para liberar permissões para usuário (simples, para teste)
+@app.post("/liberar/")
+async def liberar_consultas(user_id: int, modulos: List[str]):
+    permissoes[user_id] = modulos
+    return {"status": "ok", "user_id": user_id, "modulos_liberados": modulos}
 
-    if user not in permissoes:
-        raise HTTPException(status_code=403, detail="Usuário sem permissão")
+# Endpoint para consultar CPF
+@app.get("/cpf", response_model=ConsultaResponse)
+async def consultar_cpf(user_id: int = Query(...), cpf: str = Query(...)):
+    # Verifica se usuário tem permissão para cpf
+    if user_id not in permissoes or "cpf" not in permissoes[user_id]:
+        raise HTTPException(status_code=403, detail="Você não tem permissão para consultar CPF")
 
-    if dados.tipo not in permissoes[user]:
-        raise HTTPException(status_code=403, detail=f"Você não tem permissão para consultar '{dados.tipo}'")
+    resultado = dados_cpf.get(cpf)
+    return ConsultaResponse(consulta=cpf, resultado=resultado)
 
-    comando = f"/{dados.tipo} {dados.valor}"
-    mensagem = await bot.send_message(GRUPO_DESTINO, comando)
+# Endpoint para consultar Telefone
+@app.get("/telefone", response_model=ConsultaResponse)
+async def consultar_telefone(user_id: int = Query(...), telefone: str = Query(...)):
+    # Verifica permissão para telefone
+    if user_id not in permissoes or "telefone" not in permissoes[user_id]:
+        raise HTTPException(status_code=403, detail="Você não tem permissão para consultar Telefone")
 
-    resposta = await aguardar_resposta(mensagem.message_id)
+    resultado = dados_telefone.get(telefone)
+    return ConsultaResponse(consulta=telefone, resultado=resultado)
 
-    if resposta:
-        return {"status": "ok", "resposta": resposta}
-    else:
-        raise HTTPException(status_code=504, detail="Tempo de resposta esgotado")
+# Você pode criar outras rotas como /nome, /cnpj, /placa, seguindo o mesmo padrão
+
+# Endpoint painel para ver permissões atuais
+@app.get("/painel/{user_id}")
+async def painel(user_id: int):
+    modulos = permissoes.get(user_id)
+    if not modulos:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    return {"user_id": user_id, "modulos_liberados": modulos}
